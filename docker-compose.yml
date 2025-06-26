@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  jenkins:
+    image: jenkins/jenkins:lts
+    container_name: jenkins-automation-lab
+    restart: unless-stopped
+    user: root
+    ports:
+      - '8080:8080' # Jenkins web interface
+      - '50000:50000' # Jenkins agent communication
+    volumes:
+      - jenkins_data:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock # Enable Docker inside Jenkins
+      - ./jenkins:/var/jenkins_home/workspace # Mount workspace for easy access
+    environment:
+      - JENKINS_OPTS=--httpPort=8080
+      - JAVA_OPTS=-Xmx2048m -Xms512m
+    networks:
+      - jenkins-network
+
+  # Optional: Docker-in-Docker service for CI/CD pipelines
+  docker:
+    image: docker:dind
+    container_name: jenkins-docker
+    restart: unless-stopped
+    privileged: true
+    ports:
+      - '2376:2376'
+    volumes:
+      - jenkins_docker_data:/var/lib/docker
+      - ./certs:/certs/client:ro
+    environment:
+      - DOCKER_TLS_CERTDIR=/certs
+    networks:
+      - jenkins-network
+    command: --storage-driver=overlay2
+
+volumes:
+  jenkins_data:
+    driver: local
+  jenkins_docker_data:
+    driver: local
+
+networks:
+  jenkins-network:
+    driver: bridge
