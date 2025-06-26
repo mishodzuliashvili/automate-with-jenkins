@@ -1,0 +1,99 @@
+# Jenkins Data & Workspace
+jenkins/
+jenkins_home/
+.jenkins/
+
+# Docker volumes and data
+docker-volumes/
+certs/
+*.crt
+*.key
+*.pem
+
+# Jenkins logs
+*.log
+logs/
+
+# Docker Compose override files
+docker-compose.override.yml
+docker-compose.*.yml
+!docker-compose.yml
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# Node.js (for any web app demos)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn-integrity
+
+# Python (for any Python automation scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Java (for Jenkins plugins or Java apps)
+*.class
+*.jar
+*.war
+*.ear
+target/
+build/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*~
+
+# Security sensitive files
+secrets/
+*.secret
+*password*
+*token*
+
+# Terraform (if used for infrastructure)
+*.tfstate
+*.tfstate.*
+.terraform/
+terraform.tfvars
+
+# Ansible (if used for configuration)
+*.retry
+.vault_pass.txt
+
+# Build artifacts
+dist/
+build/
+out/ 
