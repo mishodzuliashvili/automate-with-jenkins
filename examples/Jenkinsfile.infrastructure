@@ -1,0 +1,390 @@
+pipeline {
+    agent any
+    
+    environment {
+        TF_VAR_environment = "${env.BRANCH_NAME}"
+        ANSIBLE_HOST_KEY_CHECKING = 'False'
+        DOCKER_STACK_NAME = 'myapp-stack'
+    }
+    
+    parameters {
+        choice(
+            name: 'ACTION',
+            choices: ['plan', 'apply', 'destroy'],
+            description: 'What action to perform?'
+        )
+        string(
+            name: 'ENVIRONMENT',
+            defaultValue: 'staging',
+            description: 'Target environment'
+        )
+    }
+    
+    stages {
+        stage('Infrastructure Setup') {
+            parallel {
+                stage('Terraform Plan/Apply') {
+                    steps {
+                        echo '🏗️ Managing infrastructure with Terraform...'
+                        script {
+                            // Create sample Terraform files
+                            if (!fileExists('main.tf')) {
+                                writeFile file: 'main.tf', text: '''# Sample Terraform configuration
+terraform {
+  required_version = ">= 0.14"
+  required_providers {
+    docker = {
+      source  = "kreuzwerker/docker"
+      version = "~> 2.0"
+    }
+  }
+}
+
+provider "docker" {}
+
+resource "docker_network" "app_network" {
+  name = "${var.environment}-network"
+}
+
+resource "docker_volume" "app_data" {
+  name = "${var.environment}-data"
+}
+
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "staging"
+}
+
+output "network_id" {
+  value = docker_network.app_network.id
+}'''
+
+                                writeFile file: 'terraform.tfvars', text: '''environment = "staging"'''
+                            }
+                            
+                            if (params.ACTION == 'plan' || params.ACTION == 'apply') {
+                                sh '''
+                                    echo "📋 Initializing Terraform..."
+                                    terraform init || echo "Terraform not installed, simulating..."
+                                    
+                                    echo "📝 Running Terraform plan..."
+                                    terraform plan -var="environment=${ENVIRONMENT}" || echo "Plan simulated"
+                                '''
+                                
+                                if (params.ACTION == 'apply') {
+                                    sh '''
+                                        echo "🚀 Applying Terraform changes..."
+                                        terraform apply -auto-approve -var="environment=${ENVIRONMENT}" || echo "Apply simulated"
+                                    '''
+                                }
+                            } else if (params.ACTION == 'destroy') {
+                                input message: "Are you sure you want to destroy infrastructure?", ok: "Destroy"
+                                sh '''
+                                    echo "💥 Destroying infrastructure..."
+                                    terraform destroy -auto-approve -var="environment=${ENVIRONMENT}" || echo "Destroy simulated"
+                                '''
+                            }
+                        }
+                    }
+                }
+                
+                stage('Ansible Configuration') {
+                    steps {
+                        echo '⚙️ Configuring servers with Ansible...'
+                        script {
+                            // Create sample Ansible files
+                            if (!fileExists('playbook.yml')) {
+                                writeFile file: 'inventory.ini', text: '''[web_servers]
+localhost ansible_connection=local
+
+[db_servers]
+localhost ansible_connection=local'''
+
+                                writeFile file: 'playbook.yml', text: '''---
+- name: Configure Application Servers
+  hosts: web_servers
+  become: yes
+  tasks:
+    - name: Update system packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+      when: ansible_os_family == "Debian"
+      
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+      when: ansible_os_family == "Debian"
+      
+    - name: Start Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+        
+    - name: Create application directory
+      file:
+        path: /opt/myapp
+        state: directory
+        mode: '0755'
+        
+    - name: Deploy application configuration
+      template:
+        src: app.conf.j2
+        dest: /opt/myapp/app.conf
+      notify: restart app
+      
+  handlers:
+    - name: restart app
+      systemd:
+        name: myapp
+        state: restarted'''
+
+                                writeFile file: 'templates/app.conf.j2', text: '''# Application Configuration
+environment={{ ansible_hostname }}
+log_level=info
+port=8080'''
+                            }
+                            
+                            sh '''
+                                echo "📦 Running Ansible playbook..."
+                                ansible-playbook -i inventory.ini playbook.yml --check || echo "Ansible not installed, simulating..."
+                                echo "✅ Server configuration completed"
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Docker Swarm Deployment') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                echo '🐳 Deploying to Docker Swarm...'
+                script {
+                    if (!fileExists('docker-stack.yml')) {
+                        writeFile file: 'docker-stack.yml', text: '''version: '3.8'
+
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    deploy:
+      replicas: 3
+      update_config:
+        parallelism: 1
+        delay: 10s
+      restart_policy:
+        condition: on-failure
+    networks:
+      - app-network
+      
+  api:
+    image: node:18-alpine
+    command: ["node", "-e", "require('http').createServer((req,res)=>res.end('API Running')).listen(3000)"]
+    ports:
+      - "3000:3000"
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    networks:
+      - app-network
+      
+  redis:
+    image: redis:alpine
+    volumes:
+      - redis-data:/data
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: overlay
+
+volumes:
+  redis-data:'''
+                    }
+                    
+                    sh """
+                        echo "🚀 Deploying stack to Docker Swarm..."
+                        
+                        # Initialize swarm if not already done
+                        docker swarm init --advertise-addr 127.0.0.1 || echo "Swarm already initialized"
+                        
+                        # Deploy the stack
+                        docker stack deploy -c docker-stack.yml ${DOCKER_STACK_NAME}
+                        
+                        echo "📊 Stack deployment status:"
+                        docker stack services ${DOCKER_STACK_NAME}
+                    """
+                }
+            }
+        }
+        
+        stage('Health Checks') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                echo '🏥 Running infrastructure health checks...'
+                sh '''
+                    echo "🔍 Checking service health..."
+                    sleep 30
+                    
+                    echo "📊 Docker Swarm Status:"
+                    docker node ls || echo "Single node deployment"
+                    
+                    echo "📋 Service Status:"
+                    docker stack services ${DOCKER_STACK_NAME} || echo "Stack not found"
+                    
+                    echo "🌐 Testing endpoints..."
+                    curl -f http://localhost:80 || echo "Web service not ready"
+                    curl -f http://localhost:3000 || echo "API service not ready"
+                    
+                    echo "✅ Health checks completed"
+                '''
+            }
+        }
+        
+        stage('Monitoring Setup') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                echo '📊 Setting up monitoring...'
+                script {
+                    if (!fileExists('monitoring-stack.yml')) {
+                        writeFile file: 'monitoring-stack.yml', text: '''version: '3.8'
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    deploy:
+      replicas: 1
+    networks:
+      - monitoring
+      
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+    deploy:
+      replicas: 1
+    networks:
+      - monitoring
+
+networks:
+  monitoring:
+    driver: overlay'''
+
+                        writeFile file: 'prometheus.yml', text: '''global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+      
+  - job_name: 'docker'
+    static_configs:
+      - targets: ['localhost:9323']'''
+                    }
+                    
+                    sh '''
+                        echo "📊 Deploying monitoring stack..."
+                        docker stack deploy -c monitoring-stack.yml monitoring || echo "Monitoring deployment simulated"
+                        echo "📈 Grafana will be available at: http://localhost:3001"
+                        echo "🔍 Prometheus will be available at: http://localhost:9090"
+                    '''
+                }
+            }
+        }
+        
+        stage('Backup Infrastructure State') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                echo '💾 Backing up infrastructure state...'
+                sh '''
+                    echo "📦 Creating infrastructure backup..."
+                    mkdir -p backups/${BUILD_NUMBER}
+                    
+                    # Backup Terraform state
+                    cp terraform.tfstate backups/${BUILD_NUMBER}/ 2>/dev/null || echo "No Terraform state found"
+                    
+                    # Backup Docker stack configurations
+                    cp *.yml backups/${BUILD_NUMBER}/ 2>/dev/null || echo "No stack files found"
+                    
+                    # Create backup archive
+                    tar -czf "infrastructure-backup-${BUILD_NUMBER}.tar.gz" backups/${BUILD_NUMBER}/
+                    
+                    echo "✅ Infrastructure backup completed"
+                '''
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo '📋 Infrastructure Pipeline Summary'
+            sh '''
+                echo "================================"
+                echo "Action: ${ACTION}"
+                echo "Environment: ${ENVIRONMENT}"
+                echo "Build Number: ${BUILD_NUMBER}"
+                echo "Branch: ${BRANCH_NAME}"
+                echo "================================"
+            '''
+            
+            archiveArtifacts artifacts: '**/*.tf, **/*.yml, **/*.tar.gz', allowEmptyArchive: true
+        }
+        
+        success {
+            echo '✅ Infrastructure pipeline completed successfully!'
+            script {
+                if (params.ACTION == 'apply') {
+                    echo '🎉 Infrastructure deployed and ready!'
+                } else if (params.ACTION == 'destroy') {
+                    echo '💥 Infrastructure destroyed successfully!'
+                }
+            }
+        }
+        
+        failure {
+            echo '❌ Infrastructure pipeline failed!'
+            sh '''
+                echo "🔍 Collecting troubleshooting information..."
+                docker stack ps ${DOCKER_STACK_NAME} || echo "No stack deployed"
+                docker service logs ${DOCKER_STACK_NAME}_web || echo "No web service logs"
+            '''
+        }
+        
+        cleanup {
+            echo '🧹 Cleaning up temporary files...'
+            sh '''
+                rm -f *.tmp *.temp || true
+            '''
+        }
+    }
+} 

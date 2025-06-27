@@ -1,0 +1,72 @@
+pipeline {
+    agent any
+    
+    triggers {
+        // Run every day at 3 AM
+        cron('0 3 * * *')
+    }
+    
+    stages {
+        stage('System Health Check') {
+            steps {
+                echo '🔍 Checking system health...'
+                sh '''
+                    echo "📊 System Information:"
+                    echo "Date: $(date)"
+                    echo "Uptime: $(uptime)"
+                    echo "Disk Usage:"
+                    df -h
+                    echo "Memory Usage:"
+                    free -h
+                '''
+            }
+        }
+        
+        stage('Cleanup Old Files') {
+            steps {
+                echo '🧹 Cleaning up old files...'
+                sh '''
+                    echo "Cleaning temporary files older than 7 days..."
+                    find /tmp -type f -mtime +7 -delete 2>/dev/null || true
+                    echo "Cleanup completed!"
+                '''
+            }
+        }
+        
+        stage('Backup Important Data') {
+            steps {
+                echo '💾 Creating backup...'
+                sh '''
+                    echo "Creating backup archive..."
+                    mkdir -p backups
+                    tar -czf "backups/backup-$(date +%Y%m%d).tar.gz" . --exclude='backups' --exclude='.git'
+                    echo "Backup created successfully!"
+                '''
+            }
+        }
+        
+        stage('Send Report') {
+            steps {
+                echo '📧 Generating report...'
+                sh '''
+                    echo "Daily System Report - $(date)" > daily-report.txt
+                    echo "================================" >> daily-report.txt
+                    echo "✅ System health check completed" >> daily-report.txt
+                    echo "✅ File cleanup completed" >> daily-report.txt
+                    echo "✅ Backup completed" >> daily-report.txt
+                    echo "Report generated!"
+                '''
+            }
+        }
+    }
+    
+    post {
+        always {
+            archiveArtifacts artifacts: '**/*.txt', allowEmptyArchive: true
+        }
+        
+        success {
+            echo '✅ Daily automation completed successfully!'
+        }
+    }
+} 
